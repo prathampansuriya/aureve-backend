@@ -341,9 +341,9 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
     .map(
       (item) => `
       <tr>
-        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6;">${item.productNameSnapshot || 'Jewellery Masterpiece'}<br><small style="color: #706861;">SKU: ${item.skuSnapshot}</small></td>
+        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6;">${item.title || 'Jewellery Masterpiece'}<br><small style="color: #706861;">SKU: ${item.sku || ''}</small></td>
         <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: center;">${item.quantity}</td>
-        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: right;">₹${((item.priceSnapshotPaise * item.quantity) / 100).toLocaleString('en-IN')}</td>
+        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: right;">₹${(((item.unitPricePaise || 0) * (item.quantity || 1)) / 100).toLocaleString('en-IN')}</td>
       </tr>
     `
     )

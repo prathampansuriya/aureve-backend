@@ -54,6 +54,7 @@ apiRouter.use('/wishlist', wishlistRoutes);
 apiRouter.use('/cart', cartRoutes);
 apiRouter.use('/coupons', couponRoutes);
 apiRouter.use('/offers', offerRoutes);
+apiRouter.use('/admin/offers', offerRoutes);
 apiRouter.use('/newsletter', newsletterRoutes);
 
 // Mount Customer Address Book Routes

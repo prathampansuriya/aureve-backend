@@ -19,10 +19,11 @@ export const offerController = {
    * List all offers with pagination (Admin).
    */
   async getOffers(req, res) {
-    const { isActive, offerType, page, limit } = req.query;
+    const { isActive, offerType, search, page, limit } = req.query;
     const result = await offerService.getOffers({
-      isActive: isActive !== undefined ? isActive === 'true' : undefined,
+      isActive: isActive !== undefined && isActive !== '' ? isActive === 'true' : undefined,
       offerType,
+      search,
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 20
     });

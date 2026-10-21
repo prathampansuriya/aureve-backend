@@ -342,6 +342,12 @@ export const pricingService = {
       return rest;
     });
 
+    const variantSavingsPaise = lineItems.reduce(
+      (acc, i) => acc + (Math.max(0, (i.originalPricePaise - i.unitPricePaise)) * (i.quantity || 1)),
+      0
+    );
+    const totalSavingsPaise = totalDiscountPaise + variantSavingsPaise;
+
     return {
       items: cleanItems,
       pricing: {
@@ -351,6 +357,7 @@ export const pricingService = {
         couponDiscountPaise,
         totalDiscountPaise,
         discountPaise: totalDiscountPaise,
+        totalSavingsPaise,
         taxableAmountPaise,
         gstRate,
         gstPaise,
@@ -372,6 +379,68 @@ export const pricingService = {
       appliedCoupon: res.appliedCoupon,
       warnings: res.warnings
     };
+  },
+
+  /**
+   * Determine the best active promotional offer applicable to a given product.
+   * Authoritative backend matching against category, collection, product ID, or storewide scope.
+   */
+  async getApplicableOfferForProduct(product, activeOffers = null) {
+    if (!product) return null;
+
+    const offers = activeOffers || (await Offer.find({
+      isActive: true,
+      startDate: { $lte: new Date() },
+      endDate: { $gte: new Date() }
+    }).sort({ priority: -1, createdAt: -1 }).lean());
+
+    if (!offers || offers.length === 0) return null;
+
+    const prodIdStr = product._id ? product._id.toString() : '';
+    const catIdStr = product.categoryId
+      ? (product.categoryId._id ? product.categoryId._id.toString() : product.categoryId.toString())
+      : (product.category ? (product.category._id ? product.category._id.toString() : product.category.toString()) : '');
+    const colIdStrs = (product.collectionIds || product.collections || []).map(
+      (c) => (c._id ? c._id.toString() : c.toString())
+    );
+
+    for (const offer of offers) {
+      let isMatch = false;
+      if (offer.offerType === 'STOREWIDE') {
+        isMatch = true;
+      } else {
+        if (prodIdStr && offer.applicableProducts?.some((p) => (p._id ? p._id.toString() : p.toString()) === prodIdStr)) {
+          isMatch = true;
+        } else if (catIdStr && offer.applicableCategories?.some((c) => (c._id ? c._id.toString() : c.toString()) === catIdStr)) {
+          isMatch = true;
+        } else if (colIdStrs.length > 0 && offer.applicableCollections?.some((col) => colIdStrs.includes(col._id ? col._id.toString() : col.toString()))) {
+          isMatch = true;
+        }
+      }
+
+      if (isMatch) {
+        const badgeText = offer.discountType === 'PERCENTAGE'
+          ? `${offer.discountValue}% OFF`
+          : `SAVE ₹${(offer.discountValue / 100).toLocaleString('en-IN')}`;
+
+        return {
+          id: offer._id,
+          title: offer.title,
+          slug: offer.slug,
+          description: offer.description,
+          discountType: offer.discountType,
+          discountValue: offer.discountValue,
+          offerType: offer.offerType,
+          badgeText,
+          minOrderValuePaise: offer.minOrderValuePaise || 0,
+          maxDiscountPaise: offer.maxDiscountPaise || null,
+          allowStackingWithCoupons: Boolean(offer.allowStackingWithCoupons),
+          bannerUrl: offer.bannerUrl || ''
+        };
+      }
+    }
+
+    return null;
   }
 };
 

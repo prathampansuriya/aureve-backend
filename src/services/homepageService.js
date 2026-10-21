@@ -7,6 +7,7 @@ import { Product } from '../models/Product.js';
 import { Offer } from '../models/Offer.js';
 import { StoreLocation } from '../models/StoreLocation.js';
 import { productService } from './productService.js';
+import { enrichProductWithPricingAndOffers } from '../utils/pricingHelper.js';
 import { NotFoundError, ConflictError, ValidationError } from '../utils/AppError.js';
 
 export const homepageService = {
@@ -145,7 +146,7 @@ export const homepageService = {
       })
         .populate('category', 'name slug')
         .populate({ path: 'variants', match: { isActive: true } })
-        .sort({ 'pricing.baseMetalPricePaise': -1 })
+        .sort({ 'pricing.calculatedPricePaise': -1, 'pricing.baseMetalPricePaise': -1 })
         .limit(2)
         .lean(),
 
@@ -167,7 +168,7 @@ export const homepageService = {
       })
         .populate('category', 'name slug')
         .populate({ path: 'variants', match: { isActive: true } })
-        .sort({ 'pricing.baseMetalPricePaise': -1 })
+        .sort({ 'pricing.calculatedPricePaise': -1, 'pricing.baseMetalPricePaise': -1 })
         .limit(3)
         .lean(),
 
@@ -204,12 +205,12 @@ export const homepageService = {
       trendingMetadata: trendingProducts.documentedRule,
       offers: activeOffers,
       showrooms,
-      dailyWear,
-      diamondProducts,
-      goldProducts,
-      luxuryHighlights,
-      limitedEdition,
-      videoProducts,
+      dailyWear: dailyWear.map((p) => enrichProductWithPricingAndOffers(p, activeOffers)),
+      diamondProducts: diamondProducts.map((p) => enrichProductWithPricingAndOffers(p, activeOffers)),
+      goldProducts: goldProducts.map((p) => enrichProductWithPricingAndOffers(p, activeOffers)),
+      luxuryHighlights: luxuryHighlights.map((p) => enrichProductWithPricingAndOffers(p, activeOffers)),
+      limitedEdition: limitedEdition ? enrichProductWithPricingAndOffers(limitedEdition, activeOffers) : null,
+      videoProducts: videoProducts.map((p) => enrichProductWithPricingAndOffers(p, activeOffers)),
       appointmentCta: {
         title: 'Experience Haute Joaillerie in Person',
         description: 'Reserve an exclusive one-on-one consultation in our private boutique salon with a certified gemologist.',

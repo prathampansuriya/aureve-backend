@@ -299,15 +299,28 @@ export class OrderService {
           makingChargesPaise: pricing.makingChargesPaise,
           gstPaise: pricing.gstPaise,
           discountPaise: pricing.discountPaise ?? pricing.totalDiscountPaise ?? 0,
+          offerDiscountPaise: pricing.offerDiscountPaise || 0,
+          couponDiscountPaise: pricing.couponDiscountPaise || 0,
           shippingFeePaise: pricing.shippingFeePaise,
-          grandTotalPaise: pricing.grandTotalPaise
+          grandTotalPaise: pricing.grandTotalPaise,
+          totalSavingsPaise: pricing.totalSavingsPaise ?? ((pricing.offerDiscountPaise || 0) + (pricing.couponDiscountPaise || 0))
         },
         couponApplied: pricing.appliedCoupon
           ? {
               code: pricing.appliedCoupon.code,
-              discountPaise: pricing.couponDiscountPaise
+              discountPaise: pricing.couponDiscountPaise || 0
             }
           : { code: null, discountPaise: 0 },
+        appliedOffer: pricing.appliedOffer
+          ? {
+              id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
+              title: pricing.appliedOffer.title,
+              slug: pricing.appliedOffer.slug,
+              discountType: pricing.appliedOffer.discountType,
+              discountValue: pricing.appliedOffer.discountValue,
+              discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
+            }
+          : undefined,
         tracking: {
           statusTimeline: [
             {
@@ -355,9 +368,9 @@ export class OrderService {
       await Cart.findOneAndUpdate({ userId }, { items: [], appliedCouponCode: null, couponId: null });
 
       // Customer notification & transactional confirmation email
-      const customer = await User.findById(userId).select('name email');
+      const customer = await User.findById(userId).select('firstName lastName email');
       if (customer) {
-        sendOrderConfirmationEmail({ to: customer.email, name: customer.name, order }).catch(() => {});
+        sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => {});
       }
 
       await createPersistentNotification({
@@ -388,15 +401,28 @@ export class OrderService {
         makingChargesPaise: pricing.makingChargesPaise,
         gstPaise: pricing.gstPaise,
         discountPaise: pricing.discountPaise ?? pricing.totalDiscountPaise ?? 0,
+        offerDiscountPaise: pricing.offerDiscountPaise || 0,
+        couponDiscountPaise: pricing.couponDiscountPaise || 0,
         shippingFeePaise: pricing.shippingFeePaise,
-        grandTotalPaise: pricing.grandTotalPaise
+        grandTotalPaise: pricing.grandTotalPaise,
+        totalSavingsPaise: pricing.totalSavingsPaise ?? ((pricing.offerDiscountPaise || 0) + (pricing.couponDiscountPaise || 0))
       },
       couponApplied: pricing.appliedCoupon
         ? {
             code: pricing.appliedCoupon.code,
-            discountPaise: pricing.couponDiscountPaise
+            discountPaise: pricing.couponDiscountPaise || 0
           }
         : { code: null, discountPaise: 0 },
+      appliedOffer: pricing.appliedOffer
+        ? {
+            id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
+            title: pricing.appliedOffer.title,
+            slug: pricing.appliedOffer.slug,
+            discountType: pricing.appliedOffer.discountType,
+            discountValue: pricing.appliedOffer.discountValue,
+            discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
+          }
+        : undefined,
       tracking: {
         statusTimeline: [
           {
@@ -550,9 +576,9 @@ export class OrderService {
     );
 
     // 9. Dispatch notification & transactional confirmation email
-    const customer = await User.findById(userId).select('name email');
+    const customer = await User.findById(userId).select('firstName lastName email');
     if (customer) {
-      sendOrderConfirmationEmail({ to: customer.email, name: customer.name, order }).catch(() => {});
+      sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => {});
     }
 
     await createPersistentNotification({

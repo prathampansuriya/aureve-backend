@@ -469,7 +469,7 @@ export const getTopProducts = async ({ limit = 10, sortBy = 'revenue', range = '
         sku: cp.sku,
         image: extractSingleImageUrl(primaryImg),
         unitsSold: 0,
-        revenuePaise: cp.pricing?.baseMetalPricePaise || 0
+        revenuePaise: cp.pricing?.calculatedPricePaise || cp.pricePaise || ((cp.pricing?.baseMetalPricePaise || 0) + (cp.pricing?.diamondStonePricePaise || 0) + (cp.pricing?.makingChargesPaise || 0)) || 0
       });
     }
   }

@@ -47,7 +47,9 @@ export const wishlistService = {
         variantId: variant ? variant._id : null,
         variantName: variant ? variant.variantName : '',
         sku: variant ? variant.sku : '',
-        priceInPaise: variant ? (variant.discountPriceInPaise || variant.priceInPaise) : prod?.pricing?.baseMetalPricePaise || 0,
+        priceInPaise: variant
+          ? (variant.discountPriceInPaise || variant.priceInPaise)
+          : (prod?.pricing?.calculatedPricePaise || prod?.pricePaise || prod?.pricing?.baseMetalPricePaise || 0),
         availableStock,
         isAvailable,
         addedAt: item.addedAt

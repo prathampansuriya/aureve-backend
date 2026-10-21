@@ -192,6 +192,16 @@ const orderSchema = new mongoose.Schema(
         default: 0,
         validate: { validator: Number.isInteger, message: 'discountPaise must be an integer minor unit.' }
       },
+      offerDiscountPaise: {
+        type: Number,
+        default: 0,
+        validate: { validator: Number.isInteger, message: 'offerDiscountPaise must be an integer minor unit.' }
+      },
+      couponDiscountPaise: {
+        type: Number,
+        default: 0,
+        validate: { validator: Number.isInteger, message: 'couponDiscountPaise must be an integer minor unit.' }
+      },
       shippingFeePaise: {
         type: Number,
         default: 0,
@@ -201,10 +211,23 @@ const orderSchema = new mongoose.Schema(
         type: Number,
         required: true,
         validate: { validator: Number.isInteger, message: 'grandTotalPaise must be an integer minor unit.' }
+      },
+      totalSavingsPaise: {
+        type: Number,
+        default: 0,
+        validate: { validator: Number.isInteger, message: 'totalSavingsPaise must be an integer minor unit.' }
       }
     },
     couponApplied: {
       code: { type: String, default: null },
+      discountPaise: { type: Number, default: 0 }
+    },
+    appliedOffer: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer', default: null },
+      title: { type: String, default: null },
+      slug: { type: String, default: null },
+      discountType: { type: String, default: null },
+      discountValue: { type: Number, default: 0 },
       discountPaise: { type: Number, default: 0 }
     },
     tracking: {
@@ -273,6 +296,9 @@ orderSchema.virtual('pricing').get(function () {
     gstPaise: this.financialBreakdown.gstPaise || 0,
     shippingFeePaise: this.financialBreakdown.shippingFeePaise || 0,
     totalDiscountPaise: this.financialBreakdown.discountPaise || 0,
+    offerDiscountPaise: this.financialBreakdown.offerDiscountPaise || 0,
+    couponDiscountPaise: this.financialBreakdown.couponDiscountPaise || this.couponApplied?.discountPaise || 0,
+    totalSavingsPaise: this.financialBreakdown.totalSavingsPaise || this.financialBreakdown.discountPaise || 0,
     grandTotalPaise: this.financialBreakdown.grandTotalPaise || 0
   };
 });

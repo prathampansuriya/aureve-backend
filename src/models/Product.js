@@ -215,6 +215,11 @@ const productSchema = new mongoose.Schema(
         default: 3, // Standard 3% GST on jewellery in India
         min: 0,
         max: 28
+      },
+      calculatedPricePaise: {
+        type: Number,
+        default: 0,
+        index: true
       }
     },
     // Merchandising & Highlights
@@ -313,6 +318,23 @@ productSchema.virtual('totalPreTaxPaise').get(function () {
                (this.pricing?.diamondStonePricePaise || 0) +
                (this.pricing?.makingChargesPaise || 0);
   return this.pricing?.discountPricePaise ? this.pricing.discountPricePaise : base;
+});
+
+productSchema.virtual('pricePaise').get(function () {
+  return this.pricing?.calculatedPricePaise || this.totalPreTaxPaise || 0;
+});
+
+// Pre-save hook to ensure calculatedPricePaise is always synchronized
+productSchema.pre('save', function (next) {
+  if (this.pricing) {
+    const base = (this.pricing.baseMetalPricePaise || 0) +
+                 (this.pricing.diamondStonePricePaise || 0) +
+                 (this.pricing.makingChargesPaise || 0);
+    this.pricing.calculatedPricePaise = this.pricing.discountPricePaise
+      ? this.pricing.discountPricePaise
+      : base;
+  }
+  if (typeof next === 'function') next();
 });
 
 // Compound Indexes for catalog performance

@@ -29,16 +29,26 @@ export const offerService = {
   /**
    * List offers with pagination and filters (Admin).
    */
-  async getOffers({ isActive, offerType, page = 1, limit = 20 } = {}) {
+  async getOffers({ isActive, offerType, search, page = 1, limit = 20 } = {}) {
     const filter = {};
     if (typeof isActive === 'boolean') filter.isActive = isActive;
     if (offerType) filter.offerType = offerType;
+    if (search && search.trim()) {
+      const q = search.trim();
+      filter.$or = [
+        { title: { $regex: q, $options: 'i' } },
+        { slug: { $regex: q, $options: 'i' } }
+      ];
+    }
 
     const skip = (page - 1) * limit;
 
     const [offers, total] = await Promise.all([
       Offer.find(filter)
         .sort({ priority: -1, createdAt: -1 })
+        .populate('applicableCategories', 'name slug')
+        .populate('applicableCollections', 'name slug')
+        .populate('applicableProducts', 'title slug')
         .skip(skip)
         .limit(limit)
         .lean(),

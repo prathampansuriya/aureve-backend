@@ -8,8 +8,10 @@ import { Wishlist } from '../models/Wishlist.js';
 import { Cart } from '../models/Cart.js';
 import { Review } from '../models/Review.js';
 import { InventoryLog } from '../models/InventoryLog.js';
+import { Offer } from '../models/Offer.js';
 import { NotFoundError, ConflictError, ValidationError } from '../utils/AppError.js';
 import { slugify } from '../utils/slugHelper.js';
+import { enrichProductWithPricingAndOffers } from '../utils/pricingHelper.js';
 
 export const productService = {
   /**
@@ -230,7 +232,15 @@ export const productService = {
       throw new NotFoundError(`Product '${idOrSlug}' not found.`);
     }
 
-    return product;
+    const activeOffers = await Offer.find({
+      isActive: true,
+      startDate: { $lte: new Date() },
+      endDate: { $gte: new Date() }
+    })
+      .sort({ priority: -1, createdAt: -1 })
+      .lean();
+
+    return enrichProductWithPricingAndOffers(product, activeOffers);
   },
 
   /**
@@ -600,13 +610,17 @@ export const productService = {
 
     // Price range filter
     if (query.minPricePaise !== undefined || query.maxPricePaise !== undefined) {
-      filter['pricing.baseMetalPricePaise'] = {};
+      const priceBounds = {};
       if (query.minPricePaise !== undefined) {
-        filter['pricing.baseMetalPricePaise'].$gte = query.minPricePaise;
+        priceBounds.$gte = Number(query.minPricePaise);
       }
       if (query.maxPricePaise !== undefined) {
-        filter['pricing.baseMetalPricePaise'].$lte = query.maxPricePaise;
+        priceBounds.$lte = Number(query.maxPricePaise);
       }
+      filter.$or = [
+        { 'pricing.calculatedPricePaise': priceBounds },
+        { 'pricing.baseMetalPricePaise': priceBounds }
+      ];
     }
 
     // Merchandising flags
@@ -630,10 +644,10 @@ export const productService = {
     let sortOption = { createdAt: -1 };
     switch (query.sort) {
       case 'price_asc':
-        sortOption = { 'pricing.baseMetalPricePaise': 1 };
+        sortOption = { 'pricing.calculatedPricePaise': 1, 'pricing.baseMetalPricePaise': 1 };
         break;
       case 'price_desc':
-        sortOption = { 'pricing.baseMetalPricePaise': -1 };
+        sortOption = { 'pricing.calculatedPricePaise': -1, 'pricing.baseMetalPricePaise': -1 };
         break;
       case 'rating':
         sortOption = { averageRating: -1, reviewCount: -1 };
@@ -654,7 +668,7 @@ export const productService = {
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
-    const [products, total] = await Promise.all([
+    const [products, total, activeOffers] = await Promise.all([
       Product.find(filter)
         .populate('category', 'name slug')
         .populate('collections', 'name slug')
@@ -666,14 +680,25 @@ export const productService = {
         .skip(skip)
         .limit(limit)
         .lean(),
-      Product.countDocuments(filter)
+      Product.countDocuments(filter),
+      Offer.find({
+        isActive: true,
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() }
+      })
+        .sort({ priority: -1, createdAt: -1 })
+        .lean()
     ]);
+
+    const enrichedProducts = products.map((p) =>
+      enrichProductWithPricingAndOffers(p, activeOffers)
+    );
 
     // Facet aggregation for catalog refinement sidebar
     const facets = await this.getFilterFacets(filter);
 
     return {
-      products,
+      products: enrichedProducts,
       pagination: {
         page,
         limit,
@@ -696,8 +721,36 @@ export const productService = {
         {
           $group: {
             _id: null,
-            minPricePaise: { $min: '$pricing.baseMetalPricePaise' },
-            maxPricePaise: { $max: '$pricing.baseMetalPricePaise' }
+            minPricePaise: {
+              $min: {
+                $cond: [
+                  { $gt: ['$pricing.calculatedPricePaise', 0] },
+                  '$pricing.calculatedPricePaise',
+                  {
+                    $add: [
+                      { $ifNull: ['$pricing.baseMetalPricePaise', 0] },
+                      { $ifNull: ['$pricing.diamondStonePricePaise', 0] },
+                      { $ifNull: ['$pricing.makingChargesPaise', 0] }
+                    ]
+                  }
+                ]
+              }
+            },
+            maxPricePaise: {
+              $max: {
+                $cond: [
+                  { $gt: ['$pricing.calculatedPricePaise', 0] },
+                  '$pricing.calculatedPricePaise',
+                  {
+                    $add: [
+                      { $ifNull: ['$pricing.baseMetalPricePaise', 0] },
+                      { $ifNull: ['$pricing.diamondStonePricePaise', 0] },
+                      { $ifNull: ['$pricing.makingChargesPaise', 0] }
+                    ]
+                  }
+                ]
+              }
+            }
           }
         }
       ]),
@@ -753,10 +806,19 @@ export const productService = {
       .populate('category', 'name slug')
       .populate('variants');
 
-    // Preserve order of sales volume
+    const activeOffers = await Offer.find({
+      isActive: true,
+      startDate: { $lte: new Date() },
+      endDate: { $gte: new Date() }
+    })
+      .sort({ priority: -1, createdAt: -1 })
+      .lean();
+
+    // Preserve order of sales volume and enrich pricing
     const sortedProducts = productIds
       .map((id) => products.find((p) => p._id.toString() === id.toString()))
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((p) => enrichProductWithPricingAndOffers(p, activeOffers));
 
     return {
       products: sortedProducts,
@@ -769,16 +831,26 @@ export const productService = {
    * New arrivals listing.
    */
   async getNewArrivals({ limit = 10 } = {}) {
-    const products = await Product.find({
-      status: 'PUBLISHED',
-      isNewArrival: true
-    })
-      .populate('category', 'name slug')
-      .populate('variants')
-      .sort({ createdAt: -1 })
-      .limit(limit);
+    const [products, activeOffers] = await Promise.all([
+      Product.find({
+        status: 'PUBLISHED',
+        isNewArrival: true
+      })
+        .populate('category', 'name slug')
+        .populate('variants')
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean(),
+      Offer.find({
+        isActive: true,
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() }
+      })
+        .sort({ priority: -1, createdAt: -1 })
+        .lean()
+    ]);
 
-    return products;
+    return products.map((p) => enrichProductWithPricingAndOffers(p, activeOffers));
   },
 
   /**
@@ -787,21 +859,31 @@ export const productService = {
   async getRelatedProducts(idOrSlug, { limit = 8 } = {}) {
     const product = await this.getProductByIdOrSlug(idOrSlug, { isCustomer: true });
 
-    const related = await Product.find({
-      _id: { $ne: product._id },
-      status: 'PUBLISHED',
-      $or: [
-        { categoryId: product.categoryId },
-        { collectionIds: { $in: product.collectionIds } },
-        { occasion: product.occasion }
-      ]
-    })
-      .populate('category', 'name slug')
-      .populate('variants')
-      .sort({ averageRating: -1, createdAt: -1 })
-      .limit(limit);
+    const [related, activeOffers] = await Promise.all([
+      Product.find({
+        _id: { $ne: product._id },
+        status: 'PUBLISHED',
+        $or: [
+          { categoryId: product.categoryId },
+          { collectionIds: { $in: product.collectionIds } },
+          { occasion: product.occasion }
+        ]
+      })
+        .populate('category', 'name slug')
+        .populate('variants')
+        .sort({ averageRating: -1, createdAt: -1 })
+        .limit(limit)
+        .lean(),
+      Offer.find({
+        isActive: true,
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() }
+      })
+        .sort({ priority: -1, createdAt: -1 })
+        .lean()
+    ]);
 
-    return related;
+    return related.map((p) => enrichProductWithPricingAndOffers(p, activeOffers));
   },
 
   /**
@@ -914,7 +996,17 @@ export const productService = {
       return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
     });
 
-    const topTrending = scoredProducts.slice(0, limit);
+    const activeOffers = await Offer.find({
+      isActive: true,
+      startDate: { $lte: new Date() },
+      endDate: { $gte: new Date() }
+    })
+      .sort({ priority: -1, createdAt: -1 })
+      .lean();
+
+    const topTrending = scoredProducts
+      .slice(0, limit)
+      .map((p) => enrichProductWithPricingAndOffers(p, activeOffers));
 
     return {
       products: topTrending,
