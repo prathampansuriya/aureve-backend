@@ -337,24 +337,74 @@ export const sendAppointmentStatusEmail = async ({ to, name, appointment, status
  * Dispatches Order Confirmation Email with itemized receipt.
  */
 export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
+  // Build itemized line items with full variant descriptor
   const itemsList = (order.items || [])
-    .map(
-      (item) => `
+    .map((item) => {
+      const metalType = item.metalSpecifications?.metalType || item.metalType || '';
+      const metalPurity = item.metalSpecifications?.metalPurity || item.metalPurity || '';
+      const size = item.metalSpecifications?.size || item.size || '';
+      const sku = item.sku || '';
+      const variantParts = [
+        metalType,
+        metalPurity,
+        size ? `Size: ${size}` : '',
+        sku ? `SKU: ${sku}` : ''
+      ].filter(Boolean);
+      const variantDescriptor = variantParts.join(' &bull; ');
+      const lineTotal = item.totalPaise || ((item.unitPricePaise || 0) * (item.quantity || 1));
+      return `
       <tr>
-        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6;">${item.title || 'Jewellery Masterpiece'}<br><small style="color: #706861;">SKU: ${item.sku || ''}</small></td>
+        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6;">
+          <span style="font-weight:600;">${item.title || 'Jewellery Masterpiece'}</span><br>
+          <small style="color: #706861; font-family: monospace; font-size: 11px;">${variantDescriptor}</small>
+        </td>
         <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: center;">${item.quantity}</td>
-        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: right;">₹${(((item.unitPricePaise || 0) * (item.quantity || 1)) / 100).toLocaleString('en-IN')}</td>
-      </tr>
-    `
-    )
+        <td style="padding: 10px; border-bottom: 1px solid #F4EFE6; text-align: right; font-family: monospace;">&#8377;${(lineTotal / 100).toLocaleString('en-IN')}</td>
+      </tr>`;
+    })
     .join('');
 
-  const grandTotal = ((order.pricing?.grandTotalPaise || 0) / 100).toLocaleString('en-IN');
+  // Resolve financial breakdown — Order model stores in `financialBreakdown`; virtual `pricing` also exposes it
+  const fb = order.financialBreakdown || order.pricing || {};
+  const fmtPaise = (p) => `&#8377;${((p || 0) / 100).toLocaleString('en-IN')}`;
+
+  const subtotal = fb.subtotalPaise || 0;
+  const making = fb.makingChargesPaise || 0;
+  const offerDiscount = fb.offerDiscountPaise || 0;
+  const couponDiscount = fb.couponDiscountPaise || order.couponApplied?.discountPaise || 0;
+  const gst = fb.gstPaise || 0;
+  const shipping = fb.shippingFeePaise || 0;
+  const grandTotal = fb.grandTotalPaise || 0;
+  const totalSavings = fb.totalSavingsPaise || (offerDiscount + couponDiscount) || 0;
+  const couponCode = order.couponApplied?.code || '';
+
+  const pricingRows = [
+    `<tr><td style="padding:7px 12px; color:#706861; border-bottom:1px solid #F4EFE6;">Creations Subtotal</td><td style="padding:7px 12px; text-align:right; font-family:monospace; border-bottom:1px solid #F4EFE6;">${fmtPaise(subtotal)}</td></tr>`,
+    making > 0 ? `<tr><td style="padding:7px 12px; color:#706861; border-bottom:1px solid #F4EFE6;">Artisanal Making Charges</td><td style="padding:7px 12px; text-align:right; font-family:monospace; border-bottom:1px solid #F4EFE6;">${fmtPaise(making)}</td></tr>` : '',
+    offerDiscount > 0 ? `<tr><td style="padding:7px 12px; color:#C0392B; border-bottom:1px solid #F4EFE6;">Promotional Offer Discount</td><td style="padding:7px 12px; text-align:right; font-family:monospace; color:#C0392B; border-bottom:1px solid #F4EFE6;">-${fmtPaise(offerDiscount)}</td></tr>` : '',
+    couponDiscount > 0 ? `<tr><td style="padding:7px 12px; color:#C0392B; border-bottom:1px solid #F4EFE6;">Privilege Code${couponCode ? ` (${couponCode})` : ''}</td><td style="padding:7px 12px; text-align:right; font-family:monospace; color:#C0392B; border-bottom:1px solid #F4EFE6;">-${fmtPaise(couponDiscount)}</td></tr>` : '',
+    `<tr><td style="padding:7px 12px; color:#706861; border-bottom:1px solid #F4EFE6;">Applicable GST (3% Jewellery Tax)</td><td style="padding:7px 12px; text-align:right; font-family:monospace; border-bottom:1px solid #F4EFE6;">${fmtPaise(gst)}</td></tr>`,
+    `<tr><td style="padding:7px 12px; color:#706861; border-bottom:1px solid #F4EFE6;">Insured White-Glove Transit</td><td style="padding:7px 12px; text-align:right; font-family:monospace; border-bottom:1px solid #F4EFE6;">${shipping > 0 ? fmtPaise(shipping) : 'Complimentary'}</td></tr>`,
+    totalSavings > 0 ? `<tr><td style="padding:7px 12px; color:#C0392B; font-weight:600; border-bottom:1px solid #E8E2D6;">Total Savings</td><td style="padding:7px 12px; text-align:right; font-family:monospace; color:#C0392B; font-weight:600; border-bottom:1px solid #E8E2D6;">-${fmtPaise(totalSavings)}</td></tr>` : '',
+    `<tr style="background:#FDFBF7;"><td style="padding:10px 12px; font-weight:bold; font-size:14px;">Total Valuation</td><td style="padding:10px 12px; text-align:right; font-family:monospace; font-weight:bold; font-size:16px; color:#9E7B47;">${fmtPaise(grandTotal)}</td></tr>`
+  ].filter(Boolean).join('');
+
+  // Shipping address — Order model stores it in `shippingAddress` with fields: fullName, addressLine1, addressLine2, landmark, city, state, postalCode, country
+  const sa = order.shippingAddress || {};
+  const addrLines = [
+    sa.fullName ? `<strong>${sa.fullName}</strong>` : '',
+    [sa.addressLine1, sa.addressLine2].filter(Boolean).join(', '),
+    sa.landmark ? `Near ${sa.landmark}` : '',
+    [sa.city, sa.state].filter(Boolean).join(', '),
+    sa.postalCode ? `PIN: ${sa.postalCode}` : '',
+    sa.country || 'India'
+  ].filter(Boolean);
+  const shippingAddressHtml = addrLines.join('<br>') || 'Address on file';
 
   const contentHtml = `
     <h2 style="font-family: 'Cormorant Garamond', serif; font-size: 24px; color: #1A1412; margin-top: 0;">Order Confirmed: ${order.orderNumber}</h2>
     <p>Dear ${name || 'Valued Client'},</p>
-    <p>Thank you for acquiring handcrafted treasures from the House of AUREVÉ. Your bespoke order has been confirmed and placed in high-security preparation.</p>
+    <p>Thank you for acquiring handcrafted treasures from the House of AURE&#x00C9;. Your bespoke order has been confirmed and placed in high-security preparation.</p>
 
     <table style="width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 13px;">
       <thead>
@@ -367,18 +417,17 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
       <tbody>
         ${itemsList}
       </tbody>
-      <tfoot>
-        <tr>
-          <td colspan="2" style="padding: 12px 10px; font-weight: bold; text-align: right;">Grand Total:</td>
-          <td style="padding: 12px 10px; font-weight: bold; text-align: right; color: #9E7B47; font-size: 16px;">₹${grandTotal}</td>
-        </tr>
-      </tfoot>
+    </table>
+
+    <table style="width: 100%; border-collapse: collapse; margin: 0 0 24px; font-size: 13px; border: 1px solid #E8E2D6; border-radius: 4px;">
+      ${pricingRows}
     </table>
 
     <div style="background-color: #FDFBF7; padding: 16px; border: 1px solid #E8E2D6; border-radius: 4px; font-size: 13px; margin: 20px 0;">
       <p style="margin: 4px 0;"><strong>Order Number:</strong> ${order.orderNumber}</p>
       <p style="margin: 4px 0;"><strong>Payment Method:</strong> ${order.paymentMethod}</p>
-      <p style="margin: 4px 0;"><strong>Shipping Destination:</strong> ${order.shippingAddressSnapshot?.addressLine || ''}, ${order.shippingAddressSnapshot?.city || ''}, ${order.shippingAddressSnapshot?.state || ''} - ${order.shippingAddressSnapshot?.postalCode || ''}</p>
+      <p style="margin: 10px 0 4px;"><strong>Shipping Destination:</strong></p>
+      <p style="margin: 0; line-height: 1.8; color: #706861;">${shippingAddressHtml}</p>
     </div>
 
     <p style="font-size: 13px; color: #706861;">Every piece is verified for BIS Hallmarking authenticity and accompanied by an insured transit certificate.</p>
@@ -386,9 +435,9 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
 
   return sendTransactionalEmail({
     to,
-    subject: `AUREVÉ Order Confirmation: ${order.orderNumber}`,
-    title: 'AUREVÉ Order Confirmation',
-    preheader: `Thank you for your order ${order.orderNumber}. Grand Total: ₹${grandTotal}.`,
+    subject: `AURE\u00C9 Order Confirmation: ${order.orderNumber}`,
+    title: 'AURE\u00C9 Order Confirmation',
+    preheader: `Thank you for your order ${order.orderNumber}. Grand Total: ${fmtPaise(grandTotal)}.`,
     contentHtml
   });
 };
