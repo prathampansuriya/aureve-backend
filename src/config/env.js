@@ -33,7 +33,7 @@ const envSchema = z.object({
   RAZORPAY_KEY_SECRET: z.string().optional().default(''),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional().default(''),
 
-  // SMTP Email
+  // SMTP Email (local development fallback only)
   SMTP_HOST: z.string().optional().default(''),
   SMTP_PORT: z.coerce.number().optional().default(587),
   SMTP_SECURE: z.preprocess(
@@ -44,6 +44,11 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional().default(''),
   EMAIL_FROM: z.string().default('AUREVÉ Concierge <concierge@aureve.com>'),
   EMAIL_LOGO_URL: z.string().url().or(z.literal('')).optional().default(''),
+
+  // Brevo HTTP API — used on Render (SMTP ports are blocked on free tier)
+  BREVO_API_KEY: z.string().optional().default(''),
+  BREVO_SENDER_EMAIL: z.string().optional().default(''), // verified sender email in Brevo
+  BREVO_SENDER_NAME: z.string().optional().default('AUREVÉ Concierge'),
 
   // Business standards
   DEFAULT_CURRENCY: z.string().default('INR'),

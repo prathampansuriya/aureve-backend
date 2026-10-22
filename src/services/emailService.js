@@ -4,15 +4,11 @@ import { logger } from '../utils/logger.js';
 
 let transporter = null;
 
+// ─── Nodemailer fallback for local development (SMTP not blocked locally) ───
 const getTransporter = () => {
   if (transporter) return transporter;
-
   const isConfigured = Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
-
-  if (!isConfigured) {
-    logger.warn('[EMAIL SERVICE] SMTP credentials are not fully configured. Outgoing transactional emails will be logged only.');
-    return null;
-  }
+  if (!isConfigured) return null;
 
   transporter = nodemailer.createTransport({
     host: env.SMTP_HOST,
@@ -20,13 +16,58 @@ const getTransporter = () => {
     secure: env.SMTP_SECURE,
     pool: true,
     maxConnections: 5,
-    auth: {
-      user: env.SMTP_USER,
-      pass: env.SMTP_PASS
-    }
+    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }
+  });
+  return transporter;
+};
+
+// ─── Brevo HTTP API sender (works on Render free tier) ───
+const sendEmailViaBrevo = async ({ to, subject, html, text }) => {
+  const senderEmail = env.BREVO_SENDER_EMAIL || 'concierge@aureve.com';
+  const senderName = env.BREVO_SENDER_NAME || 'AUREVÉ Concierge';
+
+  const payload = {
+    sender: { name: senderName, email: senderEmail },
+    to: [{ email: to }],
+    subject,
+    htmlContent: html
+  };
+
+  // Only include textContent if a non-empty string is provided
+  if (text && typeof text === 'string' && text.trim().length > 0) {
+    payload.textContent = text;
+  }
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'api-key': env.BREVO_API_KEY,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload)
   });
 
-  return transporter;
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Brevo API error: ${response.status} - ${errorBody}`);
+  }
+
+  const data = await response.json();
+  return { messageId: data.messageId || 'brevo-dispatched' };
+};
+
+// ─── Unified sender: Brevo in prod, Nodemailer locally ───
+const sendEmail = async ({ to, subject, html, text }) => {
+  if (env.BREVO_API_KEY) {
+    return sendEmailViaBrevo({ to, subject, html, text });
+  }
+  const mailClient = getTransporter();
+  if (!mailClient) {
+    throw new Error('No email provider configured (set BREVO_API_KEY or SMTP_*)');
+  }
+  const info = await mailClient.sendMail({ from: env.EMAIL_FROM, to, subject, html });
+  return { messageId: info.messageId };
 };
 
 /**
@@ -88,13 +129,11 @@ const renderLuxuryEmailTemplate = ({ title, preheader, contentHtml }) => {
  * Dispatches a verification OTP email.
  */
 export const sendVerificationOtpEmail = async ({ to, name, otp, expiresMinutes = 10 }) => {
-  const mailClient = getTransporter();
-
   const contentHtml = `
     <h2 style="font-family: 'Cormorant Garamond', serif; font-size: 24px; color: #1A1412; margin-top: 0;">Welcome to the House of AUREVÉ</h2>
     <p>Dear ${name || 'Valued Client'},</p>
     <p>Thank you for initiating your journey with AUREVÉ. To authenticate your account and ensure the utmost privacy of your bespoke jewellery selections, please use the verification code below:</p>
-    
+
     <div class="otp-box">
       <div class="otp-code">${otp}</div>
       <p style="margin: 8px 0 0; font-size: 12px; color: #706861;">Valid for ${expiresMinutes} minutes</p>
@@ -109,18 +148,13 @@ export const sendVerificationOtpEmail = async ({ to, name, otp, expiresMinutes =
     contentHtml
   });
 
-  if (!mailClient) {
+  if (!env.BREVO_API_KEY && !getTransporter()) {
     logger.info(`[MOCK EMAIL DISPATCH] To: ${to} | Purpose: OTP Verification | OTP: ${otp}`);
-    return { delivered: false, reason: 'SMTP_NOT_CONFIGURED' };
+    return { delivered: false, reason: 'EMAIL_NOT_CONFIGURED' };
   }
 
   try {
-    const info = await mailClient.sendMail({
-      from: env.EMAIL_FROM,
-      to,
-      subject: `AUREVÉ Verification Code: ${otp}`,
-      html
-    });
+    const info = await sendEmail({ to, subject: `AUREVÉ Verification Code: ${otp}`, html });
     logger.info(`[EMAIL SENT] Verification OTP dispatched to ${to} (MessageId: ${info.messageId})`);
     return { delivered: true, messageId: info.messageId };
   } catch (error) {
@@ -133,13 +167,11 @@ export const sendVerificationOtpEmail = async ({ to, name, otp, expiresMinutes =
  * Dispatches a password reset email.
  */
 export const sendPasswordResetEmail = async ({ to, name, resetUrl, expiresMinutes = 60 }) => {
-  const mailClient = getTransporter();
-
   const contentHtml = `
     <h2 style="font-family: 'Cormorant Garamond', serif; font-size: 24px; color: #1A1412; margin-top: 0;">Password Reset Request</h2>
     <p>Dear ${name || 'Valued Client'},</p>
     <p>We received an official request to reset the password for your AUREVÉ account. To establish a new security credential, please click the link below:</p>
-    
+
     <div style="text-align: center;">
       <a href="${resetUrl}" class="button" target="_blank">Reset Password</a>
     </div>
@@ -154,18 +186,13 @@ export const sendPasswordResetEmail = async ({ to, name, resetUrl, expiresMinute
     contentHtml
   });
 
-  if (!mailClient) {
+  if (!env.BREVO_API_KEY && !getTransporter()) {
     logger.info(`[MOCK EMAIL DISPATCH] To: ${to} | Purpose: Password Reset | URL: ${resetUrl}`);
-    return { delivered: false, reason: 'SMTP_NOT_CONFIGURED' };
+    return { delivered: false, reason: 'EMAIL_NOT_CONFIGURED' };
   }
 
   try {
-    const info = await mailClient.sendMail({
-      from: env.EMAIL_FROM,
-      to,
-      subject: 'Reset Your AUREVÉ Account Password',
-      html
-    });
+    const info = await sendEmail({ to, subject: 'Reset Your AUREVÉ Account Password', html });
     logger.info(`[EMAIL SENT] Password reset dispatched to ${to} (MessageId: ${info.messageId})`);
     return { delivered: true, messageId: info.messageId };
   } catch (error) {
@@ -178,13 +205,11 @@ export const sendPasswordResetEmail = async ({ to, name, resetUrl, expiresMinute
  * Dispatches a security session notification.
  */
 export const sendSecurityAlertEmail = async ({ to, name, alertType, ipAddress, userAgent }) => {
-  const mailClient = getTransporter();
-
   const contentHtml = `
     <h2 style="font-family: 'Cormorant Garamond', serif; font-size: 24px; color: #8B1E1E; margin-top: 0;">Security Alert: ${alertType}</h2>
     <p>Dear ${name || 'Valued Client'},</p>
     <p>We detected an important security action on your AUREVÉ account:</p>
-    
+
     <div style="background-color: #FDFBF7; padding: 16px; border: 1px solid #E8E2D6; border-radius: 4px; font-size: 13px; margin: 20px 0;">
       <p style="margin: 4px 0;"><strong>Action:</strong> ${alertType}</p>
       <p style="margin: 4px 0;"><strong>IP Address:</strong> ${ipAddress || 'Unavailable'}</p>
@@ -201,18 +226,13 @@ export const sendSecurityAlertEmail = async ({ to, name, alertType, ipAddress, u
     contentHtml
   });
 
-  if (!mailClient) {
+  if (!env.BREVO_API_KEY && !getTransporter()) {
     logger.info(`[MOCK EMAIL DISPATCH] To: ${to} | Purpose: Security Alert (${alertType})`);
-    return { delivered: false, reason: 'SMTP_NOT_CONFIGURED' };
+    return { delivered: false, reason: 'EMAIL_NOT_CONFIGURED' };
   }
 
   try {
-    const info = await mailClient.sendMail({
-      from: env.EMAIL_FROM,
-      to,
-      subject: `Security Alert: ${alertType} on your AUREVÉ Account`,
-      html
-    });
+    const info = await sendEmail({ to, subject: `Security Alert: ${alertType} on your AUREVÉ Account`, html });
     return { delivered: true, messageId: info.messageId };
   } catch (error) {
     logger.error(`[EMAIL FAILED] Failed to send security alert to ${to}: ${error.message}`);
@@ -224,25 +244,19 @@ export const sendSecurityAlertEmail = async ({ to, name, alertType, ipAddress, u
  * Dispatches generic luxury transactional email.
  */
 export const sendTransactionalEmail = async ({ to, subject, title, preheader, contentHtml }) => {
-  const mailClient = getTransporter();
   const html = renderLuxuryEmailTemplate({
     title: title || subject,
     preheader: preheader || subject,
     contentHtml
   });
 
-  if (!mailClient) {
+  if (!env.BREVO_API_KEY && !getTransporter()) {
     logger.info(`[MOCK EMAIL DISPATCH] To: ${to} | Subject: ${subject}`);
-    return { delivered: false, reason: 'SMTP_NOT_CONFIGURED' };
+    return { delivered: false, reason: 'EMAIL_NOT_CONFIGURED' };
   }
 
   try {
-    const info = await mailClient.sendMail({
-      from: env.EMAIL_FROM,
-      to,
-      subject,
-      html
-    });
+    const info = await sendEmail({ to, subject, html });
     logger.info(`[EMAIL SENT] Transactional email sent to ${to} (MessageId: ${info.messageId})`);
     return { delivered: true, messageId: info.messageId };
   } catch (error) {
@@ -337,7 +351,6 @@ export const sendAppointmentStatusEmail = async ({ to, name, appointment, status
  * Dispatches Order Confirmation Email with itemized receipt.
  */
 export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
-  // Build itemized line items with full variant descriptor
   const itemsList = (order.items || [])
     .map((item) => {
       const metalType = item.metalSpecifications?.metalType || item.metalType || '';
@@ -364,7 +377,6 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
     })
     .join('');
 
-  // Resolve financial breakdown — Order model stores in `financialBreakdown`; virtual `pricing` also exposes it
   const fb = order.financialBreakdown || order.pricing || {};
   const fmtPaise = (p) => `&#8377;${((p || 0) / 100).toLocaleString('en-IN')}`;
 
@@ -389,7 +401,6 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
     `<tr style="background:#FDFBF7;"><td style="padding:10px 12px; font-weight:bold; font-size:14px;">Total Valuation</td><td style="padding:10px 12px; text-align:right; font-family:monospace; font-weight:bold; font-size:16px; color:#9E7B47;">${fmtPaise(grandTotal)}</td></tr>`
   ].filter(Boolean).join('');
 
-  // Shipping address — Order model stores it in `shippingAddress` with fields: fullName, addressLine1, addressLine2, landmark, city, state, postalCode, country
   const sa = order.shippingAddress || {};
   const addrLines = [
     sa.fullName ? `<strong>${sa.fullName}</strong>` : '',
@@ -487,10 +498,9 @@ export const sendReviewModerationEmail = async ({ to, name, productTitle, status
       ${moderatorNotes ? `<p style="margin: 4px 0;"><strong>Curator Notes:</strong> ${moderatorNotes}</p>` : ''}
     </div>
 
-    <p style="font-size: 13px; color: #706861;">${
-      isApproved
-        ? 'Your verified review is now live on the public collection catalogue and assisting fellow patrons in their selections.'
-        : 'If you have questions regarding our community review guidelines, our concierge team is happy to assist.'
+    <p style="font-size: 13px; color: #706861;">${isApproved
+      ? 'Your verified review is now live on the public collection catalogue and assisting fellow patrons in their selections.'
+      : 'If you have questions regarding our community review guidelines, our concierge team is happy to assist.'
     }</p>
   `;
 
@@ -502,4 +512,3 @@ export const sendReviewModerationEmail = async ({ to, name, productTitle, status
     contentHtml
   });
 };
-
