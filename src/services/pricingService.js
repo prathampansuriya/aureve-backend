@@ -7,14 +7,6 @@ import { Offer } from '../models/Offer.js';
 import { ValidationError } from '../utils/AppError.js';
 
 export const pricingService = {
-  /**
-   * Authoritative price calculation engine for Cart, Checkout, Order, and Payments.
-   * Never trusts client-provided amounts. Enforces exact integer minor unit (paise) arithmetic.
-   *
-   * @param {Array<Object>} items - Array of { productId, variantId, quantity }
-   * @param {Object} options - { couponCode, userId, customShippingFeePaise }
-   * @returns {Object} Deterministic pricing summary and item snapshots
-   */
   async calculateCartPrice(items = [], { couponCode = null, userId = null, customShippingFeePaise = null } = {}) {
     if (!items || items.length === 0) {
       return {
@@ -41,7 +33,7 @@ export const pricingService = {
     const now = new Date();
     const warnings = [];
 
-    // 1. Fetch live products and variants from MongoDB
+    // 1. Fetch live products and variants
     const variantIds = items.map((i) => i.variantId).filter(Boolean);
     const variants = await ProductVariant.find({ _id: { $in: variantIds } }).lean();
     const variantMap = new Map(variants.map((v) => [v._id.toString(), v]));
@@ -88,7 +80,6 @@ export const pricingService = {
         warnings.push(`Only ${availableStock} unit(s) of '${product.title} (${variant.variantName})' remain available.`);
       }
 
-      // Check if price changed from snapshot
       const liveUnitPricePaise =
         variant.discountPriceInPaise && variant.discountPriceInPaise < variant.priceInPaise
           ? variant.discountPriceInPaise
@@ -131,7 +122,7 @@ export const pricingService = {
           : !isStockSufficient
             ? `Requested ${item.quantity} exceeds available stock of ${availableStock}`
             : null,
-        productRef: product // Used for offer/coupon matching
+        productRef: product
       });
     }
 
@@ -155,7 +146,6 @@ export const pricingService = {
           continue;
         }
 
-        // Calculate eligible items for this offer
         const eligibleItems = availableLineItems.filter((item) => {
           if (offer.offerType === 'STOREWIDE') return true;
 
@@ -215,21 +205,10 @@ export const pricingService = {
       const codeUpper = couponCode.trim().toUpperCase();
       const coupon = await Coupon.findOne({ code: codeUpper });
 
-      if (!coupon) {
-        throw new ValidationError(`Coupon code '${codeUpper}' is invalid.`);
-      }
-
-      if (!coupon.isActive) {
-        throw new ValidationError(`Coupon code '${codeUpper}' is currently deactivated.`);
-      }
-
-      if (now < coupon.validFrom) {
-        throw new ValidationError(`Coupon code '${codeUpper}' is not yet active.`);
-      }
-
-      if (now > coupon.validUntil) {
-        throw new ValidationError(`Coupon code '${codeUpper}' has expired.`);
-      }
+      if (!coupon) throw new ValidationError(`Coupon code '${codeUpper}' is invalid.`);
+      if (!coupon.isActive) throw new ValidationError(`Coupon code '${codeUpper}' is currently deactivated.`);
+      if (now < coupon.validFrom) throw new ValidationError(`Coupon code '${codeUpper}' is not yet active.`);
+      if (now > coupon.validUntil) throw new ValidationError(`Coupon code '${codeUpper}' has expired.`);
 
       if (coupon.usageLimitTotal !== null && coupon.usageCount >= coupon.usageLimitTotal) {
         throw new ValidationError(`Coupon code '${codeUpper}' has reached its total usage limit.`);
@@ -253,14 +232,12 @@ export const pricingService = {
         );
       }
 
-      // Stacking check: verify if active offer disallows coupon stacking
       if (appliedOffer && !appliedOffer.allowStackingWithCoupons) {
         throw new ValidationError(
           `Coupon '${codeUpper}' cannot be combined with the currently active promotional offer '${appliedOffer.title}'.`
         );
       }
 
-      // Check applicable product/category/collection scopes
       const hasSpecificScopes =
         (coupon.applicableProducts && coupon.applicableProducts.length > 0) ||
         (coupon.applicableCategories && coupon.applicableCategories.length > 0) ||
@@ -293,7 +270,6 @@ export const pricingService = {
         eligibleSubtotal = matchingItems.reduce((acc, i) => acc + i.lineTotalPaise, 0);
       }
 
-      // Calculate coupon discount amount
       if (coupon.discountType === 'PERCENTAGE') {
         couponDiscountPaise = Math.round((eligibleSubtotal * coupon.discountValue) / 100);
         if (coupon.maxDiscountLimitPaise && couponDiscountPaise > coupon.maxDiscountLimitPaise) {
@@ -303,8 +279,7 @@ export const pricingService = {
         couponDiscountPaise = Math.min(coupon.discountValue, eligibleSubtotal);
       }
 
-      // Prevent total discount from exceeding subtotal
-      const maxPermittedCoupon = Math.max(0, subtotalPaise - offerDiscountPaise);
+      const maxPermittedCoupon = Math.max(0, subtotalPaise + makingChargesPaise - offerDiscountPaise);
       couponDiscountPaise = Math.min(couponDiscountPaise, maxPermittedCoupon);
 
       appliedCoupon = {
@@ -317,25 +292,25 @@ export const pricingService = {
     }
 
     const totalDiscountPaise = offerDiscountPaise + couponDiscountPaise;
-    const taxableAmountPaise = Math.max(0, subtotalPaise - totalDiscountPaise);
 
-    // 5. Taxes (Standard 3% GST on Fine Jewellery in India)
+    // ─── FIX #1: Include making charges in the taxable base ───
+    const taxableAmountPaise = Math.max(0, subtotalPaise + makingChargesPaise - totalDiscountPaise);
+
+    // 5. GST on (subtotal + making − discounts)
     const gstRate = 3;
     const gstPaise = taxableAmountPaise > 0 ? Math.round((taxableAmountPaise * gstRate) / 100) : 0;
 
-    // 6. Insured Luxury Shipping
-    // Orders >= ₹50,000 (5,000,000 paise) receive complimentary white-glove vault delivery
+    // 6. Shipping
     let shippingFeePaise = 0;
     if (customShippingFeePaise !== null) {
       shippingFeePaise = customShippingFeePaise;
     } else if (subtotalPaise > 0) {
-      shippingFeePaise = subtotalPaise >= 5000000 ? 0 : 50000; // ₹500 for orders < ₹50k
+      shippingFeePaise = subtotalPaise >= 5000000 ? 0 : 50000;
     }
 
-    // 7. Final Grand Total (Exact Integer Minor Units)
+    // ─── FIX #2: Grand total = taxable (already includes making) + GST + shipping ───
     const grandTotalPaise = taxableAmountPaise + gstPaise + shippingFeePaise;
 
-    // Clean internal product references from item output
     const cleanItems = lineItems.map((item) => {
       const rest = { ...item };
       delete rest.productRef;
@@ -381,10 +356,6 @@ export const pricingService = {
     };
   },
 
-  /**
-   * Determine the best active promotional offer applicable to a given product.
-   * Authoritative backend matching against category, collection, product ID, or storewide scope.
-   */
   async getApplicableOfferForProduct(product, activeOffers = null) {
     if (!product) return null;
 
@@ -443,4 +414,3 @@ export const pricingService = {
     return null;
   }
 };
-

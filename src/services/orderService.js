@@ -130,12 +130,12 @@ export class OrderService {
           isDuplicate: true,
           razorpay: existingOrder.razorpayOrderId
             ? {
-                keyId: env.RAZORPAY_KEY_ID,
-                orderId: existingOrder.razorpayOrderId,
-                amountPaise: existingOrder.financialBreakdown.grandTotalPaise,
-                currency: 'INR',
-                orderNumber: existingOrder.orderNumber
-              }
+              keyId: env.RAZORPAY_KEY_ID,
+              orderId: existingOrder.razorpayOrderId,
+              amountPaise: existingOrder.financialBreakdown.grandTotalPaise,
+              currency: 'INR',
+              orderNumber: existingOrder.orderNumber
+            }
             : null
         };
       }
@@ -187,14 +187,34 @@ export class OrderService {
     }
     const pricing = await pricingService.calculateCartPricing(cart.items, effectiveCouponCode, userId);
 
-    // 6. COD specific eligibility rule
+    // ─── GUARANTEE: Normalize grand total (includes making charges) ───
+    const recomputedTaxable =
+      (pricing.subtotalPaise || 0) +
+      (pricing.makingChargesPaise || 0) -
+      (pricing.totalDiscountPaise || 0);
+    const recomputedGst = Math.round((recomputedTaxable * (pricing.gstRate || 3)) / 100);
+    const recomputedGrand =
+      recomputedTaxable + recomputedGst + (pricing.shippingFeePaise || 0);
+
+    pricing.grandTotalPaise = Math.max(
+      Number(pricing.grandTotalPaise) || 0,
+      recomputedGrand
+    );
+    pricing.taxableAmountPaise = recomputedTaxable;
+    pricing.gstPaise = recomputedGst;
+
+    logger.info(
+      `[ORDER AMOUNT NORMALIZED] sub=${pricing.subtotalPaise} mk=${pricing.makingChargesPaise} disc=${pricing.totalDiscountPaise} gst=${pricing.gstPaise} ship=${pricing.shippingFeePaise} GRAND=${pricing.grandTotalPaise}`
+    );
+
+    // 6. COD eligibility check
     if (paymentMethod === 'COD' && pricing.grandTotalPaise > MAX_COD_AMOUNT_PAISE) {
       throw new BadRequestError(
         'Cash on Delivery is limited to orders up to ₹50,000 for luxury security. Please choose Razorpay online payment.'
       );
     }
 
-    // 7. Generate deterministic orderNumber and assemble immutable item snapshots
+    // 7. Generate order number & snapshots
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
     const orderNumber = `AUR-${dateStr}-${randomHex}`;
@@ -224,6 +244,7 @@ export class OrderService {
         certificateNumber: variant.huid || product.hallmarking?.huid || ''
       };
     });
+
 
     const shippingSnapshot = {
       fullName: shippingAddress.fullName,
@@ -307,19 +328,19 @@ export class OrderService {
         },
         couponApplied: pricing.appliedCoupon
           ? {
-              code: pricing.appliedCoupon.code,
-              discountPaise: pricing.couponDiscountPaise || 0
-            }
+            code: pricing.appliedCoupon.code,
+            discountPaise: pricing.couponDiscountPaise || 0
+          }
           : { code: null, discountPaise: 0 },
         appliedOffer: pricing.appliedOffer
           ? {
-              id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
-              title: pricing.appliedOffer.title,
-              slug: pricing.appliedOffer.slug,
-              discountType: pricing.appliedOffer.discountType,
-              discountValue: pricing.appliedOffer.discountValue,
-              discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
-            }
+            id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
+            title: pricing.appliedOffer.title,
+            slug: pricing.appliedOffer.slug,
+            discountType: pricing.appliedOffer.discountType,
+            discountValue: pricing.appliedOffer.discountValue,
+            discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
+          }
           : undefined,
         tracking: {
           statusTimeline: [
@@ -370,7 +391,7 @@ export class OrderService {
       // Customer notification & transactional confirmation email
       const customer = await User.findById(userId).select('firstName lastName email');
       if (customer) {
-        sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => {});
+        sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => { });
       }
 
       await createPersistentNotification({
@@ -404,24 +425,21 @@ export class OrderService {
         offerDiscountPaise: pricing.offerDiscountPaise || 0,
         couponDiscountPaise: pricing.couponDiscountPaise || 0,
         shippingFeePaise: pricing.shippingFeePaise,
-        grandTotalPaise: pricing.grandTotalPaise,
+        grandTotalPaise: pricing.grandTotalPaise,   // ← now includes making
         totalSavingsPaise: pricing.totalSavingsPaise ?? ((pricing.offerDiscountPaise || 0) + (pricing.couponDiscountPaise || 0))
       },
       couponApplied: pricing.appliedCoupon
-        ? {
-            code: pricing.appliedCoupon.code,
-            discountPaise: pricing.couponDiscountPaise || 0
-          }
+        ? { code: pricing.appliedCoupon.code, discountPaise: pricing.couponDiscountPaise || 0 }
         : { code: null, discountPaise: 0 },
       appliedOffer: pricing.appliedOffer
         ? {
-            id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
-            title: pricing.appliedOffer.title,
-            slug: pricing.appliedOffer.slug,
-            discountType: pricing.appliedOffer.discountType,
-            discountValue: pricing.appliedOffer.discountValue,
-            discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
-          }
+          id: pricing.appliedOffer.id || pricing.appliedOffer._id || null,
+          title: pricing.appliedOffer.title,
+          slug: pricing.appliedOffer.slug,
+          discountType: pricing.appliedOffer.discountType,
+          discountValue: pricing.appliedOffer.discountValue,
+          discountPaise: pricing.offerDiscountPaise || pricing.appliedOffer.discountPaise || 0
+        }
         : undefined,
       tracking: {
         statusTimeline: [
@@ -436,13 +454,14 @@ export class OrderService {
     });
 
     const gatewayOrder = await razorpayService.createGatewayOrder({
-      amountPaise: pricing.grandTotalPaise,
+      amountPaise: pricing.grandTotalPaise,   // ← now GUARANTEED to include making
       currency: 'INR',
       receipt: order.orderNumber,
       notes: {
         orderId: order._id.toString(),
         orderNumber: order.orderNumber,
-        userId: userId.toString()
+        userId: userId.toString(),
+        breakdown: `sub:${pricing.subtotalPaise}|mk:${pricing.makingChargesPaise}|gst:${pricing.gstPaise}|tot:${pricing.grandTotalPaise}`
       }
     });
 
@@ -454,7 +473,7 @@ export class OrderService {
       razorpay: {
         keyId: env.RAZORPAY_KEY_ID,
         orderId: gatewayOrder.id,
-        amountPaise: pricing.grandTotalPaise,
+        amountPaise: pricing.grandTotalPaise,   // ← CheckoutPage reads this for Razorpay modal
         currency: 'INR',
         orderNumber: order.orderNumber
       }
@@ -578,7 +597,7 @@ export class OrderService {
     // 9. Dispatch notification & transactional confirmation email
     const customer = await User.findById(userId).select('firstName lastName email');
     if (customer) {
-      sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => {});
+      sendOrderConfirmationEmail({ to: customer.email, name: customer.fullName || `${customer.firstName} ${customer.lastName}`.trim(), order }).catch(() => { });
     }
 
     await createPersistentNotification({
@@ -872,7 +891,7 @@ export class OrderService {
     // Customer notification & status email
     const customer = await User.findById(userId).select('name email');
     if (customer) {
-      sendOrderStatusEmail({ to: customer.email, name: customer.name, order, newStatus: 'CANCELLED' }).catch(() => {});
+      sendOrderStatusEmail({ to: customer.email, name: customer.name, order, newStatus: 'CANCELLED' }).catch(() => { });
     }
 
     await createPersistentNotification({
@@ -1016,7 +1035,7 @@ export class OrderService {
         newStatus: status,
         trackingNumber,
         trackingUrl
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     await createPersistentNotification({
