@@ -380,14 +380,20 @@ export const sendOrderConfirmationEmail = async ({ to, name, order }) => {
   const fb = order.financialBreakdown || order.pricing || {};
   const fmtPaise = (p) => `&#8377;${((p || 0) / 100).toLocaleString('en-IN')}`;
 
-  const subtotal = fb.subtotalPaise || 0;
-  const making = fb.makingChargesPaise || 0;
-  const offerDiscount = fb.offerDiscountPaise || 0;
-  const couponDiscount = fb.couponDiscountPaise || order.couponApplied?.discountPaise || 0;
-  const gst = fb.gstPaise || 0;
-  const shipping = fb.shippingFeePaise || 0;
-  const grandTotal = fb.grandTotalPaise || 0;
-  const totalSavings = fb.totalSavingsPaise || (offerDiscount + couponDiscount) || 0;
+  const subtotal = Number(fb.subtotalPaise) || 0;
+  const making = Number(fb.makingChargesPaise) || 0;
+  const offerDiscount = Number(fb.offerDiscountPaise) || 0;
+  const couponDiscount = Number(fb.couponDiscountPaise) || Number(order.couponApplied?.discountPaise) || 0;
+  const totalSavings = Number(fb.totalSavingsPaise) || offerDiscount + couponDiscount;
+  const taxable = Math.max(0, subtotal + making - totalSavings);
+  const gst = Number(fb.gstPaise) || Math.round(taxable * 0.03);
+  const shipping = Number(fb.shippingFeePaise) || 0;
+  const computedGrand = taxable + gst + shipping;
+  const backendGrand = Number(fb.grandTotalPaise) || 0;
+  const grandTotal =
+    backendGrand > 0 && Math.abs(backendGrand - computedGrand) < 100
+      ? backendGrand
+      : computedGrand;
   const couponCode = order.couponApplied?.code || '';
 
   const pricingRows = [
